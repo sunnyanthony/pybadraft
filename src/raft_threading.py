@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import random
+from src.decorator import synchronizer
 from src.roles import NodeState
 from src.packet import vote_request, vote, load_packet, heartbeat
 
@@ -14,19 +15,21 @@ class RaftNode:
         self.term = 0
         self.voted_for = None
         self.votes_received = 0
-        self.lock = threading.Lock()
+        self.lock = threading.RLock() # avoid deadlock
 
+    @synchronizer('lock')
     def become_leader(self):
-        self.state = NodeState.LEADER
-        print(f"{self.id} is now the leader for term {self.term}.")
+        if self.state == NodeState.CANDIDATE and self.votes_received > len(self.peers) / 2:
+            self.state = NodeState.LEADER
+            print(f"{self.id} is now the leader for term {self.term}.")
 
+    @synchronizer('lock')
     def request_votes(self):
-        with self.lock:
-            self.state = NodeState.CANDIDATE
-            self.term += 1
-            self.voted_for = self.id
-            self.votes_received = 1
-            print(f"{self.id} becomes a candidate and starts election for term {self.term}.")
+        self.state = NodeState.CANDIDATE
+        self.term += 1
+        self.voted_for = self.id
+        self.votes_received = 1
+        print(f"{self.id} becomes a candidate and starts election for term {self.term}.")
 
         for peer in self.peers:
             thread = threading.Thread(target=self.send_vote_request, args=(peer,))
@@ -40,24 +43,26 @@ class RaftNode:
                 data = s.recv(1024)
                 response_data = load_packet(data)
                 if response_data.get("vote_granted"):
-                    with self.lock:
-                        self.votes_received += 1
-                        if self.votes_received > len(self.peers) / 2:
-                            self.become_leader()
+                    self.increment_votes()
             except ConnectionRefusedError:
                 print(f"{self.id} could not connect to {peer[0]}")
 
+    @synchronizer('lock')
+    def increment_votes(self):
+        self.votes_received += 1
+        self.become_leader()
+
+    @synchronizer('lock')
     def handle_vote_request(self, data, conn):
-        with self.lock:
-            term = data['term']
-            candidate_id = data['candidate_id']
-            vote_granted = False
-            if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
-                self.term = term
-                self.voted_for = candidate_id
-                self.state = NodeState.FOLLOWER
-                vote_granted = True
-            conn.sendall(vote(vote_granted, self.voted_for))
+        term = data['term']
+        candidate_id = data['candidate_id']
+        vote_granted = False
+        if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
+            self.term = term
+            self.voted_for = candidate_id
+            self.state = NodeState.FOLLOWER
+            vote_granted = True
+        conn.sendall(vote(vote_granted, self.term))
 
     def handle_connection(self, client_socket, addr):
         try:
@@ -66,20 +71,23 @@ class RaftNode:
                 client_socket.settimeout(timeout)
                 data = client_socket.recv(1024)
                 if not data:
-                    return
+                    break
                 message = load_packet(data)
                 if message["type"] == "vote_request":
                     self.handle_vote_request(message, client_socket)
                 elif message["type"] == "heartbeat":
-                    if self.state == NodeState.CANDIDATE:
-                        self.state = NodeState.FOLLOWER
-                    continue
+                    self.reset_state_on_heartbeat(message)
         except socket.timeout:
             print("Connection timeout")
         finally:
-            with self.lock:
-                self.state = NodeState.CANDIDATE
             client_socket.close()
+
+    @synchronizer('lock')
+    def reset_state_on_heartbeat(self, message):
+        if message["term"] >= self.term:
+            self.term = message["term"]
+            if self.state == NodeState.CANDIDATE:
+                self.state = NodeState.FOLLOWER
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -91,28 +99,28 @@ class RaftNode:
                 thread.start()
 
     def send_heartbeat(self):
-        with self.lock:
-            for peer in self.peers:
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.connect(('localhost', peer[1]))
-                        s.sendall(heartbeat(self.term))
-                        print(f"Node {self.id} sent heartbeat to {peer[0]}")
-                except ConnectionRefusedError:
-                    print(f"Node {self.id} could not connect to {peer[0]}")
+        for peer in self.peers:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect(('localhost', peer[1]))
+                    s.sendall(heartbeat(self.term))
+                    print(f"Node {self.id} sent heartbeat to {peer[0]}")
+            except ConnectionRefusedError:
+                print(f"Node {self.id} could not connect to {peer[0]}")
 
+    @synchronizer('lock')
+    def state_check(self):
+        if self.state == NodeState.CANDIDATE:
+            self.request_votes()
+        elif self.state == NodeState.LEADER:
+            self.send_heartbeat()
+        return random.randint(1, 5) if self.state == NodeState.CANDIDATE else 5
 
     def run(self):
         threading.Thread(target=self.start_server).start()
         while True:
             try:
-                timeout = random.randint(1, 5)
-                with self.lock:
-                    if self.state == NodeState.CANDIDATE:
-                        self.request_votes()
-                    elif self.state == NodeState.LEADER:
-                        self.send_heartbeat()
-                time.sleep(5 if self.state is not NodeState.CANDIDATE else timeout)
+                timeout = self.state_check()
+                time.sleep(timeout)
             except Exception as e:
                 print(f"Error in main thread:\n{e}")
-                pass
