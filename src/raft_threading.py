@@ -1,8 +1,8 @@
 import socket
 import threading
 import time
-import json
 from src.roles import NodeState
+from src.packet import vote_request, vote, load_packet, heartbeat
 
 class RaftNode:
     def __init__(self, id, port, peers):
@@ -35,9 +35,9 @@ class RaftNode:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.connect(('localhost', peer[1]))
-                s.sendall(json.dumps({"type": "vote_request", "term": self.term, "candidate_id": self.id}).encode())
-                response = s.recv(1024).decode()
-                response_data = json.loads(response)
+                s.sendall(vote_request(self.term, self.id))
+                data = s.recv(1024)
+                response_data = load_packet(data)
                 if response_data.get("vote_granted"):
                     with self.lock:
                         self.votes_received += 1
@@ -56,17 +56,22 @@ class RaftNode:
                 self.voted_for = candidate_id
                 self.state = NodeState.FOLLOWER
                 vote_granted = True
-            conn.sendall(json.dumps({"vote_granted": vote_granted}).encode())
+            conn.sendall(vote(vote_granted, candidate_id))
 
     def handle_connection(self, client_socket, addr):
         try:
-            client_socket.settimeout(5)
-            data = client_socket.recv(1024)
-            if not data:
-                return
-            message = json.loads(data.decode())
-            if message["type"] == "vote_request":
-                self.handle_vote_request(message, client_socket)
+            while True:
+                import random
+                timeout = random.randint(6, 10)
+                client_socket.settimeout(timeout)
+                data = client_socket.recv(1024)
+                if not data:
+                    return
+                message = load_packet(data)
+                if message["type"] == "vote_request":
+                    self.handle_vote_request(message, client_socket)
+                elif message["type"] == "heartbeat":
+                    continue
         except socket.timeout:
             print("Connection timeout")
         finally:
@@ -89,7 +94,7 @@ class RaftNode:
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.connect(('localhost', peer[1]))
-                        s.sendall(str(self.term).encode())
+                        s.sendall(heartbeat(self.term))
                         print(f"Node {self.id} sent heartbeat to {peer[0]}")
                 except ConnectionRefusedError:
                     print(f"Node {self.id} could not connect to {peer[0]}")
