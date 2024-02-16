@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import random
 from src.roles import NodeState
 from src.packet import vote_request, vote, load_packet, heartbeat
 
@@ -56,12 +57,11 @@ class RaftNode:
                 self.voted_for = candidate_id
                 self.state = NodeState.FOLLOWER
                 vote_granted = True
-            conn.sendall(vote(vote_granted, candidate_id))
+            conn.sendall(vote(vote_granted, self.voted_for))
 
     def handle_connection(self, client_socket, addr):
         try:
             while True:
-                import random
                 timeout = random.randint(6, 10)
                 client_socket.settimeout(timeout)
                 data = client_socket.recv(1024)
@@ -71,6 +71,8 @@ class RaftNode:
                 if message["type"] == "vote_request":
                     self.handle_vote_request(message, client_socket)
                 elif message["type"] == "heartbeat":
+                    if self.state == NodeState.CANDIDATE:
+                        self.state = NodeState.FOLLOWER
                     continue
         except socket.timeout:
             print("Connection timeout")
@@ -103,9 +105,14 @@ class RaftNode:
     def run(self):
         threading.Thread(target=self.start_server).start()
         while True:
-            with self.lock:
-                if self.state == NodeState.CANDIDATE:
-                    self.request_votes()
-                elif self.state == NodeState.LEADER:
-                    self.send_heartbeat()
-            time.sleep(5)
+            try:
+                timeout = random.randint(1, 5)
+                with self.lock:
+                    if self.state == NodeState.CANDIDATE:
+                        self.request_votes()
+                    elif self.state == NodeState.LEADER:
+                        self.send_heartbeat()
+                time.sleep(5 if self.state is not NodeState.CANDIDATE else timeout)
+            except Exception as e:
+                print(f"Error in main thread:\n{e}")
+                pass
