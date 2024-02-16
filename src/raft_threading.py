@@ -4,7 +4,7 @@ import time
 import random
 from src.decorator import synchronizer
 from src.roles import NodeState
-from src.packet import vote_request, vote, load_packet, heartbeat
+from src.packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 
 class RaftNode:
     def __init__(self, id, port, peers):
@@ -42,7 +42,7 @@ class RaftNode:
                 s.sendall(vote_request(self.term, self.id))
                 data = s.recv(1024)
                 response_data = load_packet(data)
-                if response_data.get("vote_granted"):
+                if response_data.type == Request.VOTE_GRANTED:
                     self.increment_votes()
             except ConnectionRefusedError:
                 print(f"{self.id} could not connect to {peer[0]}")
@@ -53,9 +53,9 @@ class RaftNode:
         self.become_leader()
 
     @synchronizer('lock')
-    def handle_vote_request(self, data, conn):
-        term = data['term']
-        candidate_id = data['candidate_id']
+    def handle_vote_request(self, data: MetaData, conn):
+        term = data.term
+        candidate_id = data.id
         vote_granted = False
         if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
             self.term = term
@@ -64,7 +64,7 @@ class RaftNode:
             vote_granted = True
         conn.sendall(vote(vote_granted, self.term))
 
-    def handle_connection(self, client_socket, addr):
+    def handle_connection(self, client_socket):
         try:
             while True:
                 timeout = random.randint(6, 10)
@@ -72,20 +72,20 @@ class RaftNode:
                 data = client_socket.recv(1024)
                 if not data:
                     break
-                message = load_packet(data)
-                if message["type"] == "vote_request":
-                    self.handle_vote_request(message, client_socket)
-                elif message["type"] == "heartbeat":
-                    self.reset_state_on_heartbeat(message)
+                metadata = load_packet(data)
+                if metadata.type == Request.VOTE_REQUEST:
+                    self.handle_vote_request(metadata, client_socket)
+                elif metadata.type == Request.HEARTBEAT:
+                    self.reset_state_on_heartbeat(metadata)
         except socket.timeout:
             print("Connection timeout")
         finally:
             client_socket.close()
 
     @synchronizer('lock')
-    def reset_state_on_heartbeat(self, message):
-        if message["term"] >= self.term:
-            self.term = message["term"]
+    def reset_state_on_heartbeat(self, data: MetaData):
+        if data.term >= self.term:
+            self.term = data.term
             if self.state == NodeState.CANDIDATE:
                 self.state = NodeState.FOLLOWER
 
