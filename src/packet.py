@@ -31,8 +31,8 @@ class MetaData:
 def load_packet(data) -> MetaData:
     return MetaData.unpack_data(data)
 
-def heartbeat(id):
-    return MetaData(type=Request.HEARTBEAT, id=id).pack_data()
+def heartbeat(id, term):
+    return MetaData(type=Request.HEARTBEAT, id=id, term=term).pack_data()
 
 def vote(vote_granted, term, id):
     return MetaData(type=Request.VOTE_GRANTED, granted=vote_granted, term=term, id=id).pack_data()
