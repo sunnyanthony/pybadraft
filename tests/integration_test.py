@@ -28,12 +28,13 @@ def test_data_packet():
     data = vote(True, 10, 234)
     assert load_packet(data) == MetaData(type=Request.VOTE_GRANTED, granted=True, term=10, id=234)
 
-def test_raft_integration(setup_nodes):
+def test_raft_master_down_integration(setup_nodes):
     nodes = setup_nodes
+    nodes[1].election_timer = threading.Timer(0.05, nodes[1].start_election)
 
-    time.sleep(10)
+    time.sleep(2)
     nodes[1].stop()
-    time.sleep(10)
+    time.sleep(2)
 
     leader_nodes = [node for node in nodes if node.state == NodeState.LEADER]
     assert len(leader_nodes) < 2, "More than one leader"
