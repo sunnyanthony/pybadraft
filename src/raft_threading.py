@@ -1,3 +1,4 @@
+from loguru import logger
 import socket
 import threading
 import time
@@ -15,13 +16,17 @@ class RaftNode:
         self.term = 0
         self.voted_for = None
         self.votes_received = 0
-        self.lock = threading.RLock() # avoid deadlock
+        self.server_timeout = 3
+        self.lock = threading.RLock()
+        self.threads = []
+        self.stop_signal = threading.Event()
+        logger.info(f"RaftNode {self.id} initialized with state: {self.state}, term: {self.term}")
 
     @synchronizer('lock')
     def become_leader(self):
         if self.state == NodeState.CANDIDATE and self.votes_received > len(self.peers) / 2:
             self.state = NodeState.LEADER
-            print(f"{self.id} is now the leader for term {self.term}.")
+            logger.info(f"{self.id} is now the leader for term {self.term}.")
 
     @synchronizer('lock')
     def request_votes(self):
@@ -29,11 +34,7 @@ class RaftNode:
         self.term += 1
         self.voted_for = self.id
         self.votes_received = 1
-        print(f"{self.id} becomes a candidate and starts election for term {self.term}.")
-
-        for peer in self.peers:
-            thread = threading.Thread(target=self.send_vote_request, args=(peer,))
-            thread.start()
+        logger.info(f"{self.id} becomes a candidate and starts election for term {self.term}.")
 
     def send_vote_request(self, peer):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -45,11 +46,13 @@ class RaftNode:
                 if response_data.type == Request.VOTE_GRANTED:
                     self.increment_votes()
             except ConnectionRefusedError:
-                print(f"{self.id} could not connect to {peer[0]}")
+                logger.error(f"{self.id} could not connect to {peer[0]}")
 
     @synchronizer('lock')
     def increment_votes(self):
         self.votes_received += 1
+        if self.votes_received > len(self.peers) / 2:
+            logger.info(f"{self.id} has received majority votes")
         self.become_leader()
 
     @synchronizer('lock')
@@ -62,6 +65,9 @@ class RaftNode:
             self.voted_for = candidate_id
             self.state = NodeState.FOLLOWER
             vote_granted = True
+            logger.info(f"Vote granted by {self.id} to {candidate_id} for term {term}")
+        else:
+            logger.info(f"Vote denied by {self.id} to {candidate_id} for term {term}")
         conn.sendall(vote(vote_granted, self.term))
 
     def handle_connection(self, client_socket):
@@ -71,6 +77,7 @@ class RaftNode:
                 client_socket.settimeout(timeout)
                 data = client_socket.recv(1024)
                 if not data:
+                    logger.warning("Connection terminated, no data received")
                     break
                 metadata = load_packet(data)
                 if metadata.type == Request.VOTE_REQUEST:
@@ -78,7 +85,7 @@ class RaftNode:
                 elif metadata.type == Request.HEARTBEAT:
                     self.reset_state_on_heartbeat(metadata)
         except socket.timeout:
-            print("Connection timeout")
+            logger.warning("Connection timeout")
         finally:
             client_socket.close()
 
@@ -88,15 +95,22 @@ class RaftNode:
             self.term = data.term
             if self.state == NodeState.CANDIDATE:
                 self.state = NodeState.FOLLOWER
+            logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('localhost', self.port))
             s.listen()
-            while True:
-                conn, addr = s.accept()
-                thread = threading.Thread(target=self.handle_connection, args=(conn, addr))
-                thread.start()
+            s.settimeout(self.server_timeout)
+            logger.info(f"Server started on port {self.port}")
+            while not self.stop_signal.is_set():
+                try:
+                    conn, addr = s.accept()
+                    thread = threading.Thread(target=self.handle_connection, args=(conn, addr))
+                    thread.start()
+                    self.threads.append(thread)
+                except socket.timeout:
+                    continue
 
     def send_heartbeat(self):
         for peer in self.peers:
@@ -104,9 +118,9 @@ class RaftNode:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect(('localhost', peer[1]))
                     s.sendall(heartbeat(self.term))
-                    print(f"Node {self.id} sent heartbeat to {peer[0]}")
+                    logger.info(f"Node {self.id} sent heartbeat to {peer[0]}")
             except ConnectionRefusedError:
-                print(f"Node {self.id} could not connect to {peer[0]}")
+                logger.error(f"Node {self.id} could not connect to {peer[0]}")
 
     @synchronizer('lock')
     def state_check(self):
@@ -114,13 +128,33 @@ class RaftNode:
             self.request_votes()
         elif self.state == NodeState.LEADER:
             self.send_heartbeat()
+        else:
+            logger.debug(f"Node {self.id} is in state {self.state}")
         return random.randint(1, 5) if self.state == NodeState.CANDIDATE else 5
 
-    def run(self):
-        threading.Thread(target=self.start_server).start()
-        while True:
+    def _run(self):
+        self.stop_signal.clear()
+        thread = threading.Thread(target=self.start_server)
+        thread.start()
+        self.threads.append(thread)
+        while not self.stop_signal.is_set():
             try:
                 timeout = self.state_check()
                 time.sleep(timeout)
             except Exception as e:
-                print(f"Error in main thread:\n{e}")
+                logger.exception(f"Error in raft daemon for {self.id}:\n{e}")
+
+    def run(self, blocking=False):
+        logger.info(f"Node {self.id} starting...")
+        thread = threading.Thread(target=self._run, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        if blocking:
+            for t in self.threads:
+                t.join()
+    
+    def stop(self):
+        self.stop_signal.set()
+        for thread in self.threads:
+            thread.join()
+        logger.info(f"Node {self.id} stopped")
