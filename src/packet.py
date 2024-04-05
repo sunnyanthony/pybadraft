@@ -1,4 +1,3 @@
-import json
 import struct
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -15,9 +14,9 @@ class Request(Enum):
 @dataclass
 class MetaData:
     type: Request
-    term: int
-    id: int
-    granted: bool
+    term: int = 0
+    id: int = 0
+    granted: bool = False
 
     def pack_data(self):
         return struct.pack('!III', self.type.value, self.term, self.id)
@@ -29,17 +28,13 @@ class MetaData:
         return data_obj
 
 def load_packet(data) -> MetaData:
-    #return json.loads(data.decode())
     return MetaData.unpack_data(data)
 
-def heartbeat(term):
-    #return json.dumps({"type": "heartbeat", "term": term}).encode()
-    return MetaData(type=Request.HEARTBEAT, term=term).pack_data()
+def heartbeat(id):
+    return MetaData(type=Request.HEARTBEAT, id=id).pack_data()
 
-def vote(vote_granted, candidate_id):
-    #return json.dumps({"type": "vote_granted", "vote_granted": vote_granted, "candidate_id": candidate_id}).encode()
-    return MetaData(type=Request.VOTE_GRANTED, granted=vote_granted, id=candidate_id).pack_data()
+def vote(vote_granted, term):
+    return MetaData(type=Request.VOTE_GRANTED, granted=vote_granted, term=term).pack_data()
 
 def vote_request(term, candidate_id):
-    #return json.dumps({"type": "vote_request", "term": term, "candidate_id": candidate_id}).encode()
     return MetaData(type=Request.VOTE_REQUEST, term=term, id=candidate_id).pack_data()
