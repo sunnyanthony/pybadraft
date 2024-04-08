@@ -2,7 +2,8 @@ FROM python:3.11
 
 WORKDIR /app
 
-RUN pip install "your-package-name[dev]@ git+https://github.com/sunnyanthony/pybadraft.git"
+ARG REPO_URL
+RUN pip install git+${REPO_URL}#egg=pybadraft
 
 COPY tests /app/tests
 

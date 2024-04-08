@@ -16,5 +16,5 @@ jobs:
         - uses: actions/checkout@v2
         - name: Build and Run Docker Container
           run: |
-            docker build --build-arg REPO_URL=https://github.com/${{ github.repository }}.git@$GITHUB_SHA -t python-app-test -f tests/Dockerfile
+            docker build --build-arg REPO_URL=https://github.com/${{ github.repository }}.git@${{ github.sha }} -t python-app-test -f tests/Dockerfile
             docker run python-app-test
