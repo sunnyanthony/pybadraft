@@ -1,10 +1,16 @@
 import pytest
 import threading
 import time
-from src.packet import MetaData, Request, load_packet, vote
-from src.raft_threading import RaftNode
-from src.roles import NodeState
 from functools import partial
+
+try:
+    from src.packet import MetaData, Request, load_packet, vote
+    from src.raft_threading import RaftNode
+    from src.roles import NodeState
+except ModuleNotFoundError:
+    from pybadraft.packet import MetaData, Request, load_packet, vote
+    from pybadraft.raft_threading import RaftNode
+    from pybadraft.roles import NodeState
 
 @pytest.fixture(scope="module")
 def setup_nodes(request):

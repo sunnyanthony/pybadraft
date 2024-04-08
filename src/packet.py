@@ -1,5 +1,5 @@
 import struct
-from enum import Enum, auto
+from enum import Enum
 from dataclasses import dataclass
 
 # TODO: gprof or grpc instead
@@ -9,7 +9,6 @@ class Request(Enum):
     VOTE_REQUEST = 1
     VOTE_GRANTED = 2
     HEARTBEAT = 3
-
 
 @dataclass
 class MetaData:

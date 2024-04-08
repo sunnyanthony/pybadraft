@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from src.roles import NodeState
+from .roles import NodeState
 
 class RaftNodeBase(ABC):
     def __init__(self, id, port, peers):

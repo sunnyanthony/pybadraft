@@ -1,2 +1,1 @@
-unittest
-pytest
+pytest==8.1.1

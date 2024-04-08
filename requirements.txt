@@ -1,4 +1,1 @@
-asyncio
-threading
-multiprocessing
-loguru
+loguru==0.7.2

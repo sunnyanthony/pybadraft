@@ -4,9 +4,9 @@ import socket
 import threading
 import time
 import random
-from src.decorator import synchronizer
-from src.roles import NodeState
-from src.packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
+from .decorator import synchronizer
+from .roles import NodeState
+from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 
 class RaftNode:
     def __init__(self, id, port, peers, init_timeout=0):
