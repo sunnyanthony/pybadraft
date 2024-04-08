@@ -22,6 +22,9 @@ dynamic = ["dependencies", "optional-dependencies"]
 homepage = "PyBadRaft"
 repository = "https://github.com/sunnyanthony/pybadraft"
 
+[tool.setuptools]
+package-dir = {"pybadraft" = "src"}
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 optional-dependencies = { dev = { file = ["tests/requirements.txt"] } }
