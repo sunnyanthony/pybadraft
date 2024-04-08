@@ -7,7 +7,7 @@ name = "pybadraft"
 version = "0.0.1"
 description = "This is a draft for my RAFT package"
 authors = [
-    { name = "Anthony Cheng", email = "NA@NA" }
+    { name = "Anthony Cheng", email = "sunnyanthonycheng@gmail.com" }
 ]
 readme = "README.md"
 license = { file = "LICENSE" }
