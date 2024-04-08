@@ -15,6 +15,8 @@ jobs:
     steps:
         - uses: actions/checkout@v2
         - name: Build and Run Docker Container
+          env:
+            GH_PAT: ${{ secrets.GH_PAT }}
           run: |
-            docker build --build-arg REPO_URL=https://github.com/${{ github.repository }}.git@${{ github.sha }} -t python-app-test -f tests/Dockerfile .
+            docker build --build-arg REPO_URL=https://${{ secrets.GH_PAT }}:x-oauth-basic@github.com/${{ github.repository }}.git@${{ github.sha }} -t python-app-test -f tests/Dockerfile .
             docker run python-app-test
