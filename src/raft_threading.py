@@ -5,7 +5,7 @@ import threading
 import time
 import random
 from .decorator import synchronizer
-from .roles import NodeState
+from .roles import CandidateState, FollowerState, LeaderState, NodeState
 from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 
 class RaftNode:
@@ -13,7 +13,7 @@ class RaftNode:
         self.id = id
         self.port = port
         self.peers = peers
-        self._state = NodeState.FOLLOWER
+        self._state = FollowerState()
         self.term = 0
         self.voted_for = None
         self.votes_received = 0
@@ -22,26 +22,28 @@ class RaftNode:
         self.lock = threading.RLock()
         self.threads = []
         self.stop_signal = threading.Event()
+        self.heartbeat_timer = None
         self.election_timer = threading.Timer(self.election_timeout, self.start_election) if not init_timeout else threading.Timer(init_timeout, self.start_election)
-        logger.info(f"RaftNode {self.id} initialized with state: {self.state}, term: {self.term}")
+        self._state.on_enter_state(self)
+        logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
     @property
     def state(self):
-        return self._state
+        return self._state.__class__
 
     @state.setter
     @synchronizer('lock')
-    def state(self, value):
-        if self._state != value:
-            self._state = value
-            logger.info(f"Node {self.id} state changed to {self._state}")
-            if self._state == NodeState.LEADER:
-                self.become_leader()
+    def state(self, value: NodeState):
+        if self._state.__class__ != value:
+            self._state.on_exit_state(self)
+            self._state = value()
+            self._state.on_enter_state(self)
+            logger.info(f"Node {self.id} state changed to {self._state.__class__.__name__}")
 
     @synchronizer('lock')
-    def become_leader(self):
-        if self.state == NodeState.CANDIDATE and self.votes_received > len(self.peers) / 2:
-            self.state = NodeState.LEADER
+    def check_votes(self):
+        if self.state == CandidateState and self.votes_received > len(self.peers) / 2:
+            self.state = LeaderState
             logger.info(f"{self.id} is now the leader for term {self.term}.")
 
     def request_votes(self):
@@ -76,7 +78,7 @@ class RaftNode:
         self.votes_received += 1
         if self.votes_received > len(self.peers) / 2:
             logger.info(f"{self.id} has received majority votes")
-        self.become_leader()
+        self.check_votes()
 
     @synchronizer('lock')
     def handle_vote_request(self, data: MetaData, conn):
@@ -86,7 +88,7 @@ class RaftNode:
         if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
             self.term = term
             self.voted_for = candidate_id
-            self.state = NodeState.FOLLOWER
+            self.state = FollowerState
             vote_granted = True
             self.reset_election_timer()
             logger.info(f"Vote granted by {self.id} to {candidate_id} for term {term}")
@@ -109,7 +111,6 @@ class RaftNode:
                 if metadata.type == Request.VOTE_REQUEST:
                     self.handle_vote_request(metadata, client_socket)
                 elif metadata.type == Request.HEARTBEAT:
-                    self.reset_election_timer()
                     self.reset_state_on_heartbeat(metadata)
         except socket.timeout:
             logger.warning("Connection timeout")
@@ -122,9 +123,10 @@ class RaftNode:
     def reset_state_on_heartbeat(self, data: MetaData):
         if data.term >= self.term:
             self.term = data.term
-            if self.state == NodeState.CANDIDATE:
-                self.state = NodeState.FOLLOWER
+            if self.state == CandidateState:
+                self.state = FollowerState
                 logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
+            self._state.handle_request(self)
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -168,8 +170,8 @@ class RaftNode:
         with self.lock:
             if self.stop_signal.is_set():
                 return
-            if self.state != NodeState.LEADER and (self.voted_for is None or self.voted_for == self.id):
-                self.state = NodeState.CANDIDATE
+            if self.state != LeaderState and (self.voted_for is None or self.voted_for == self.id):
+                self.state = CandidateState
                 self.term += 1
                 should_request_votes = True
                 self.voted_for = self.id
@@ -193,23 +195,23 @@ class RaftNode:
 
     @synchronizer('lock')
     def state_check(self):
-        if self.state == NodeState.LEADER:
+        if self.state == LeaderState:
             self.send_heartbeat()
-        return 50/1000
+            self._state.handle_request(self)
+        return 
+
+    def start_heartbeat(self):
+        self.heartbeat_timer = threading.Timer(50/1000, self.state_check)
+        self.heartbeat_timer.start()
 
     def _run(self):
         self.stop_signal.clear()
         thread = threading.Thread(target=self.start_server)
         thread.start()
 
-        self.election_timer.start()
         self.threads.append(thread)
         while not self.stop_signal.is_set():
-            try:
-                timeout = self.state_check()
-                time.sleep(timeout)
-            except Exception as e:
-                logger.exception(f"Error in raft daemon for {self.id}:\n{e}")
+            time.sleep(1)
 
     def run(self, blocking=False):
         logger.info(f"Node {self.id} starting...")
@@ -226,5 +228,5 @@ class RaftNode:
         self.stop_signal.set()
         for thread in self.threads:
             thread.join()
-        self.state = NodeState.FOLLOWER
+        self.state = FollowerState
         logger.info(f"Node {self.id} stopped")
