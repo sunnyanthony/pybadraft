@@ -6,11 +6,11 @@ from functools import partial
 try:
     from src.packet import MetaData, Request, load_packet, vote
     from src.raft_threading import RaftNode
-    from src.roles import NodeState
+    from src.roles import LeaderState
 except ModuleNotFoundError:
     from pybadraft.packet import MetaData, Request, load_packet, vote
     from pybadraft.raft_threading import RaftNode
-    from pybadraft.roles import NodeState
+    from pybadraft.roles import LeaderState
 
 @pytest.fixture(scope="module")
 def setup_nodes(request):
@@ -42,6 +42,6 @@ def test_raft_master_down_integration(setup_nodes):
     nodes[1].stop()
     time.sleep(2)
 
-    leader_nodes = [node for node in nodes if node.state == NodeState.LEADER]
+    leader_nodes = [node for node in nodes if node.state == LeaderState]
     assert len(leader_nodes) < 2, "More than one leader"
     assert len(leader_nodes) >= 1, "No leader"
