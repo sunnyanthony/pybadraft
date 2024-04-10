@@ -16,6 +16,7 @@ class RaftNode:
         self.peers_status = [0] * len(peers)
         self._state = FollowerState()
         self.term = 0
+        self.leader = -1
         self.voted_for = None
         self.votes_received = 0
         self.server_timeout = 3
@@ -127,15 +128,20 @@ class RaftNode:
             if self.state == CandidateState:
                 self.state = FollowerState
                 logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
-            self._state.handle_request(self)
+            self._state.handle_request(self, data)
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('localhost', self.port))
             s.listen()
             s.settimeout(self.server_timeout)
+            print_leader = 0
             logger.info(f"Server started on port {self.port}")
             while not self.stop_signal.is_set():
+                if print_leader % 10 == 0:
+                    print_leader = 0
+                    logger.debug(f"Node {self.id}: leader now is {self.leader}")
+                print_leader += 1
                 try:
                     conn, addr = s.accept()
                     thread = threading.Thread(target=self.handle_connection, args=(conn,))
