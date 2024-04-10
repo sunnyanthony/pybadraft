@@ -13,6 +13,7 @@ class RaftNode:
         self.id = id
         self.port = port
         self.peers = peers
+        self.peers_status = [0] * len(peers)
         self._state = FollowerState()
         self.term = 0
         self.voted_for = None
@@ -144,22 +145,20 @@ class RaftNode:
                     continue
 
     def send_heartbeat(self):
-        remove = []
-        for peer in self.peers:
+        for idx, peer in enumerate(self.peers):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect(('localhost', peer[1]))
                     s.settimeout(0.001)
                     s.sendall(heartbeat(self.id, self.term))
                     #logger.info(f"Node {self.id} sent heartbeat to {peer[0]}")
+                self.peers_status[idx] = 0
             except ConnectionRefusedError:
-                logger.error(f"Node {self.id} could not connect to {peer[1]}")
-                remove.append(peer)
+                if self.peers_status[idx] == 0:
+                    logger.error(f"Node {self.id} could not connect to {peer[1]}")
+                    self.peers_status[idx] = 1
             except Exception as e:
                 logger.error(f"Node {self.id}: {e}")
-
-        for peer in remove:
-            self.peers.remove(peer)
 
     def give_up_election(self):
         self.voted_for = None
@@ -198,7 +197,7 @@ class RaftNode:
         if self.state == LeaderState:
             self.send_heartbeat()
             self._state.handle_request(self)
-        return 
+        return
 
     def start_heartbeat(self):
         self.heartbeat_timer = threading.Timer(50/1000, self.state_check)
