@@ -1,3 +1,4 @@
+import asyncio
 from typing import List, Optional, Tuple
 from functools import partial
 from loguru import logger
@@ -22,10 +23,11 @@ class RaftNode:
         self.votes_received: int = 0
         self.server_timeout: int = 3
         self.election_timeout: float = random.randint(150, 300) / 1000.0
+        self.heartbeat_interval = 50/1000
         self.lock: threading.RLock = threading.RLock()
         self.threads: List[threading.Thread] = []
         self.stop_signal: threading.Event = threading.Event()
-        self.heartbeat_timer: Optional[threading.Timer] = None
+        self.heartbeat_timer: Optional[threading.Thread] = None
         self.election_timer: threading.Timer = threading.Timer(self.election_timeout, self.start_election) if not init_timeout else threading.Timer(init_timeout, self.start_election)
         self._state.on_enter_state(self)
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
@@ -150,20 +152,44 @@ class RaftNode:
                 except socket.timeout:
                     continue
 
-    def send_heartbeat(self) -> None:
+    async def _heartbeat_async(self):
+        tasks = []
         for idx, peer in enumerate(self.peers):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.connect(('localhost', peer[1]))
-                    s.settimeout(0.001)
-                    s.sendall(heartbeat(self.id, self.term))
-                self.peers_status[idx] = 0
-            except ConnectionRefusedError:
-                if self.peers_status[idx] == 0:
-                    logger.error(f"Node {self.id} could not connect to {peer[1]}")
-                    self.peers_status[idx] = 1
-            except Exception as e:
-                logger.error(f"Node {self.id}: {e}")
+            task = asyncio.create_task(self._send_heartbeat_to_peer(peer, idx))
+            tasks.append(task)
+        await asyncio.gather(*tasks)
+
+    async def _send_heartbeat_to_peer(self, peer, idx):
+        writer = None
+        try:
+            _, writer = await asyncio.open_connection(peer[0], peer[1])
+            writer.write(heartbeat(self.id, self.term))
+            await writer.drain()
+            self.peers_status[idx] = 0
+        except OSError as e:
+            if self.peers_status[idx] == 0:
+                logger.error(f"Sending heartbeat to {peer[0]} failed: {str(e)}")
+                self.peers_status[idx] = 1
+        finally:
+            if writer:
+                writer.close()
+                await writer.wait_closed()
+
+    def send_heartbeat(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def heartbeat_loop():
+            while self.state == LeaderState and not self.stop_signal.is_set():
+                await self._heartbeat_async()
+                await asyncio.to_thread(self._state.handle_request, self)
+                await asyncio.sleep(self.heartbeat_interval)
+
+        loop.run_until_complete(heartbeat_loop())
+
+    def start_heartbeat(self) -> None:
+        self.heartbeat_timer = threading.Thread(target=self.send_heartbeat)
+        self.heartbeat_timer.start()
 
     def give_up_election(self) -> None:
         self.voted_for = None
@@ -195,17 +221,6 @@ class RaftNode:
         self.election_timer = threading.Timer(self.election_timeout, self.start_election)
         self.election_timer.start()
 
-    @synchronizer('lock')
-    def state_check(self) -> None:
-        if self.state == LeaderState:
-            self.send_heartbeat()
-            self._state.handle_request(self)
-        return
-
-    def start_heartbeat(self) -> None:
-        self.heartbeat_timer = threading.Timer(50/1000, self.state_check)
-        self.heartbeat_timer.start()
-
     def _run(self) -> None:
         self.stop_signal.clear()
         thread = threading.Thread(target=self.start_server)
@@ -230,5 +245,7 @@ class RaftNode:
         self.stop_signal.set()
         for thread in self.threads:
             thread.join()
+        if self.heartbeat_timer:
+            self.heartbeat_timer.join()
         self.state = FollowerState
         logger.info(f"Node {self.id} stopped")
