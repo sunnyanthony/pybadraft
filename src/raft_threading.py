@@ -274,7 +274,7 @@ class RaftNode:
                 logger.debug(task.cancel())
         
         # FIXME: can't wait the server back but server closed
-        await asyncio.gather(*tasks, return_exceptions=True)
+        #await asyncio.gather(*tasks, return_exceptions=True)
 
     def stop(self) -> None:
         logger.info(f"Node {self.id} stopping")
