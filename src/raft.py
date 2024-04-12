@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from .roles import NodeState
 
 class RaftNodeBase(ABC):
     def __init__(self, id, port, peers):
+        from .roles import NodeState
         self.id = id
         self.port = port
         self.peers = peers

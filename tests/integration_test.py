@@ -6,11 +6,11 @@ from functools import partial
 try:
     from src.packet import MetaData, Request, load_packet, vote
     from src.raft_threading import RaftNode
-    from src.roles import NodeState
+    from src.roles import LeaderState, FollowerState
 except ModuleNotFoundError:
     from pybadraft.packet import MetaData, Request, load_packet, vote
     from pybadraft.raft_threading import RaftNode
-    from pybadraft.roles import NodeState
+    from pybadraft.roles import LeaderState, FollowerState
 
 @pytest.fixture(scope="module")
 def setup_nodes(request):
@@ -30,18 +30,31 @@ def setup_nodes(request):
         node.stop()
 
 def test_data_packet():
-
     data = vote(True, 10, 234)
     assert load_packet(data) == MetaData(type=Request.VOTE_GRANTED, granted=True, term=10, id=234)
 
 def test_raft_master_down_integration(setup_nodes):
     nodes = setup_nodes
-    nodes[1].election_timer = threading.Timer(0.05, nodes[1].start_election)
 
     time.sleep(2)
-    nodes[1].stop()
+    leader_nodes = [node for node in nodes if node.state == LeaderState]
+    assert len(leader_nodes) == 1, "Initial election error"
+    leader_nodes[0].stop()
     time.sleep(2)
 
-    leader_nodes = [node for node in nodes if node.state == NodeState.LEADER]
+    leader_nodes = [node for node in nodes if node.state == LeaderState]
     assert len(leader_nodes) < 2, "More than one leader"
     assert len(leader_nodes) >= 1, "No leader"
+
+def test_raft_node_back_integration(setup_nodes):
+    nodes = setup_nodes
+
+    leader_nodes = [node for node in nodes if not node.threads]
+    leader_nodes[0].run()
+    time.sleep(2)
+
+    leader_nodes = [node for node in nodes if node.state == LeaderState]
+    assert len(leader_nodes) < 2, "More than one leader"
+    assert len(leader_nodes) >= 1, "No leader"
+
+    assert 2 == len([node for node in nodes if node.state == FollowerState])

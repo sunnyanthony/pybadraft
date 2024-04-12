@@ -1,3 +1,6 @@
+import asyncio
+import datetime
+from typing import List, Optional, Tuple
 from functools import partial
 from loguru import logger
 import socket
@@ -5,46 +8,53 @@ import threading
 import time
 import random
 from .decorator import synchronizer
-from .roles import NodeState
+from .roles import CandidateState, FollowerState, LeaderState, NodeState
 from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 
 class RaftNode:
-    def __init__(self, id, port, peers, init_timeout=0):
-        self.id = id
-        self.port = port
-        self.peers = peers
-        self._state = NodeState.FOLLOWER
-        self.term = 0
-        self.voted_for = None
-        self.votes_received = 0
-        self.server_timeout = 3
-        self.election_timeout = random.randint(150, 300) / 1000.0
-        self.lock = threading.RLock()
-        self.threads = []
-        self.stop_signal = threading.Event()
-        self.election_timer = threading.Timer(self.election_timeout, self.start_election) if not init_timeout else threading.Timer(init_timeout, self.start_election)
-        logger.info(f"RaftNode {self.id} initialized with state: {self.state}, term: {self.term}")
+    def __init__(self, id: int, port: int, peers: List[Tuple[str, int]], init_timeout: float=0) -> None:
+        self.id: int = id
+        self.port: int = port
+        self.peers: List[Tuple[str, int]] = peers
+        self.peers_status: List[int] = [0] * len(peers)
+        self._state: NodeState = FollowerState()
+        self.term: int = 0
+        self.leader: int = -1
+        self.voted_for: Optional[int] = None
+        self.votes_received: int = 0
+        self.server_timeout: int = 3
+        self.election_timeout: float = random.randint(150, 300) / 1000.0
+        self.heartbeat_interval = 50/1000
+        self.server = None
+        self.server_loop = None
+        self.lock: threading.RLock = threading.RLock()
+        self.threads: List[threading.Thread] = []
+        self.stop_signal: threading.Event = threading.Event()
+        self.heartbeat_timer: Optional[threading.Thread] = None
+        self.got_heartbeat = datetime.datetime.now().timestamp()
+        self.election_timer: threading.Timer = threading.Timer(self.election_timeout, self.start_election) if not init_timeout else threading.Timer(init_timeout, self.start_election)
+        self._state.on_enter_state(self)
+        logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
     @property
-    def state(self):
-        return self._state
+    def state(self) -> type:
+        return self._state.__class__
 
     @state.setter
     @synchronizer('lock')
-    def state(self, value):
-        if self._state != value:
-            self._state = value
-            logger.info(f"Node {self.id} state changed to {self._state}")
-            if self._state == NodeState.LEADER:
-                self.become_leader()
+    def state(self, value: type[NodeState]) -> None:
+        if self._state.__class__ != value:
+            self._state.on_exit_state(self)
+            self._state = value()
+            self._state.on_enter_state(self)
+            logger.info(f"Node {self.id} state changed to {self._state.__class__.__name__}")
 
-    @synchronizer('lock')
-    def become_leader(self):
-        if self.state == NodeState.CANDIDATE and self.votes_received > len(self.peers) / 2:
-            self.state = NodeState.LEADER
+    def check_votes(self) -> None:
+        if self.state == CandidateState and self.votes_received > len(self.peers) / 2:
+            self.state = LeaderState
             logger.info(f"{self.id} is now the leader for term {self.term}.")
 
-    def request_votes(self):
+    def request_votes(self) -> None:
         threads = []
         for peer in self.peers:
             threads.append(threading.Thread(target=partial(self.send_vote_request, peer=peer)))
@@ -53,7 +63,7 @@ class RaftNode:
         for thread in threads:
             thread.join()
 
-    def send_vote_request(self, peer):
+    def send_vote_request(self, peer: Tuple[str, int]) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.settimeout(self.election_timeout)
@@ -71,105 +81,152 @@ class RaftNode:
             except Exception as e:
                 logger.error(f"An error occurred while connecting or communicating with {peer[0]}: {str(e)}")
 
-    @synchronizer('lock')
-    def increment_votes(self):
+    def increment_votes(self) -> None:
         self.votes_received += 1
         if self.votes_received > len(self.peers) / 2:
             logger.info(f"{self.id} has received majority votes")
-        self.become_leader()
+        self.check_votes()
 
-    @synchronizer('lock')
-    def handle_vote_request(self, data: MetaData, conn):
+    async def handle_vote_request(self, data: MetaData,  writer: asyncio.StreamWriter) -> None:
         term = data.term
         candidate_id = data.id
         vote_granted = False
-        if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
-            self.term = term
-            self.voted_for = candidate_id
-            self.state = NodeState.FOLLOWER
-            vote_granted = True
+        with self.lock:
+            if (self.term < term) and (self.voted_for is None or self.voted_for == candidate_id):
+                self.term = term
+                self.voted_for = candidate_id
+                self.state = FollowerState
+                vote_granted = True
+        if vote_granted:
+            await asyncio.sleep(0)
             self.reset_election_timer()
             logger.info(f"Vote granted by {self.id} to {candidate_id} for term {term}")
         else:
             logger.info(f"Vote denied by {self.id} to {candidate_id} for term {term}")
             logger.debug(f"Because of {self.term}, {self.voted_for}")
-        data = vote(vote_granted, self.term, self.id)
-        conn.sendall(data)
+        writer.write(vote(vote_granted, self.term, self.id))
+        await writer.drain()
 
-    def handle_connection(self, client_socket):
+    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        data_len = len(MetaData().pack_data())
+        data = bytearray()
         try:
             while not self.stop_signal.is_set():
-                timeout = random.randint(6, 10)
-                client_socket.settimeout(timeout)
-                data = client_socket.recv(1024)
-                if not data:
-                    # TODO: fix it
-                    continue
-                metadata = load_packet(data)
-                if metadata.type == Request.VOTE_REQUEST:
-                    self.handle_vote_request(metadata, client_socket)
-                elif metadata.type == Request.HEARTBEAT:
-                    self.reset_election_timer()
-                    self.reset_state_on_heartbeat(metadata)
-        except socket.timeout:
-            logger.warning("Connection timeout")
-        except ConnectionResetError:
-            logger.warning("Connection reset by peer")
-        finally:
-            client_socket.close()
-
-    @synchronizer('lock')
-    def reset_state_on_heartbeat(self, data: MetaData):
-        if data.term >= self.term:
-            self.term = data.term
-            if self.state == NodeState.CANDIDATE:
-                self.state = NodeState.FOLLOWER
-                logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
-
-    def start_server(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('localhost', self.port))
-            s.listen()
-            s.settimeout(self.server_timeout)
-            logger.info(f"Server started on port {self.port}")
-            while not self.stop_signal.is_set():
                 try:
-                    conn, addr = s.accept()
-                    thread = threading.Thread(target=self.handle_connection, args=(conn,))
-                    thread.start()
-                    self.threads.append(thread)
-                except socket.timeout:
+                    data = await asyncio.wait_for(reader.readexactly(data_len), timeout=1.0)
+                    metadata = load_packet(data)
+                    if metadata.type == Request.VOTE_REQUEST:
+                        await self.handle_vote_request(metadata, writer)
+                    elif metadata.type == Request.HEARTBEAT:
+                        self.reset_state_on_heartbeat(metadata)
+                except asyncio.TimeoutError:
                     continue
-
-    def send_heartbeat(self):
-        remove = []
-        for peer in self.peers:
+        except asyncio.CancelledError:
+            logger.error(f"End... handler")
+        except Exception as e:
+            if not data:
+                # check readexactly exception
+                logger.debug(f"{e}")
+        finally:
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.connect(('localhost', peer[1]))
-                    s.settimeout(0.001)
-                    s.sendall(heartbeat(self.id, self.term))
-                    #logger.info(f"Node {self.id} sent heartbeat to {peer[0]}")
-            except ConnectionRefusedError:
-                logger.error(f"Node {self.id} could not connect to {peer[1]}")
-                remove.append(peer)
+                writer.close()
+                await writer.wait_closed()
             except Exception as e:
-                logger.error(f"Node {self.id}: {e}")
+                logger.error(f"{e}")
 
-        for peer in remove:
-            self.peers.remove(peer)
+    def reset_state_on_heartbeat(self, data: MetaData) -> None:
+        with self.lock:
+            if data.term >= self.term:
+                self.term = data.term
+                if self.state == CandidateState:
+                    self.state = FollowerState
+                    logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
+        if data.term >= self.term:
+            self._state.handle_request(self, data)
+            self.got_heartbeat = datetime.datetime.now().timestamp()
 
-    def give_up_election(self):
+    def start_server(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.server_loop = loop
+
+        async def server_coro():
+            try:
+                self.server = await asyncio.start_server(self.handle_client, 'localhost', self.port)
+                async with self.server:
+                    await self.server.serve_forever()
+            except asyncio.CancelledError:
+                logger.debug(f"Node {self.id} close server")
+                raise asyncio.CancelledError
+            except Exception as e:
+                logger.error(f"{e}")
+            finally:
+                self.server.close()
+                await self.server.wait_closed()
+
+        try:
+            loop.run_until_complete(server_coro())
+        except asyncio.CancelledError:
+            pass
+        finally:
+            loop.close()
+            logger.debug(f"Event loop closed {self.server.is_serving()}")
+
+
+    async def _heartbeat_async(self):
+        tasks = []
+        for idx, peer in enumerate(self.peers):
+            task = asyncio.create_task(self._send_heartbeat_to_peer(peer, idx))
+            tasks.append(task)
+        await asyncio.gather(*tasks)
+
+    async def _send_heartbeat_to_peer(self, peer, idx):
+        writer = None
+        try:
+            _, writer = await asyncio.open_connection(peer[0], peer[1])
+            writer.write(heartbeat(self.id, self.term))
+            await writer.drain()
+            self.peers_status[idx] = 0
+        except OSError as e:
+            if self.peers_status[idx] == 0:
+                logger.error(f"Sending heartbeat to {peer[0]} failed: {str(e)}")
+                self.peers_status[idx] = 1
+        finally:
+            if writer:
+                writer.close()
+                await writer.wait_closed()
+
+    def send_heartbeat(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def heartbeat_loop():
+            while self.state == LeaderState and not self.stop_signal.is_set():
+                await self._heartbeat_async()
+                # in short time calling to_thread will overwhelme the coroutine
+                #await asyncio.to_thread(self._state.handle_request, self)
+                await asyncio.sleep(self.heartbeat_interval)
+
+        loop.run_until_complete(heartbeat_loop())
+
+    def start_heartbeat(self) -> None:
+        #while self.heartbeat_timer.is_alive():
+        # TODO: avoid multiple heartbeat tasks   
+        self.heartbeat_timer = threading.Thread(target=self.send_heartbeat)
+        self.heartbeat_timer.start()
+
+    def give_up_election(self) -> None:
         self.voted_for = None
         self.votes_received = 0
 
-    def start_election(self):
+    def start_election(self) -> None:
         should_request_votes = False
+        if self.stop_signal.is_set():
+            return
         with self.lock:
-            if self.stop_signal.is_set():
-                return
-            if self.state != NodeState.LEADER and (self.voted_for is None or self.voted_for == self.id):
-                self.state = NodeState.CANDIDATE
+            diff = datetime.datetime.now().timestamp() - self.got_heartbeat
+            if self.state != LeaderState and (self.voted_for is None or self.voted_for == self.id) and diff > self.election_timeout:
+                self.state = CandidateState
                 self.term += 1
                 should_request_votes = True
                 self.voted_for = self.id
@@ -179,39 +236,27 @@ class RaftNode:
         if should_request_votes:
             self.request_votes()
 
-        # if leader, don't need to restart election
-        # TODO: recovery
         timeout = self.election_timeout + random.randint(10, 100) / 1000.0
         threading.Timer(timeout/2, self.give_up_election).start()
         self.election_timer = threading.Timer(timeout, self.start_election)
         self.election_timer.start()
 
-    def reset_election_timer(self):
+    def reset_election_timer(self) -> None:
         self.election_timer.cancel()
+        time.sleep(0)
         self.election_timer = threading.Timer(self.election_timeout, self.start_election)
         self.election_timer.start()
 
-    @synchronizer('lock')
-    def state_check(self):
-        if self.state == NodeState.LEADER:
-            self.send_heartbeat()
-        return 50/1000
-
-    def _run(self):
+    def _run(self) -> None:
         self.stop_signal.clear()
         thread = threading.Thread(target=self.start_server)
         thread.start()
 
-        self.election_timer.start()
         self.threads.append(thread)
         while not self.stop_signal.is_set():
-            try:
-                timeout = self.state_check()
-                time.sleep(timeout)
-            except Exception as e:
-                logger.exception(f"Error in raft daemon for {self.id}:\n{e}")
+            time.sleep(1)
 
-    def run(self, blocking=False):
+    def run(self, blocking: bool=False) -> None:
         logger.info(f"Node {self.id} starting...")
         thread = threading.Thread(target=self._run, daemon=True)
         self.threads.append(thread)
@@ -219,12 +264,31 @@ class RaftNode:
         if blocking:
             for t in self.threads:
                 t.join()
-    
-    def stop(self):
+
+    async def stop_server(self):
+        tasks = [t for t in asyncio.all_tasks(self.server_loop) if t is not asyncio.current_task()]
+
+        for task in tasks:
+            await asyncio.sleep(0)
+            if not task.done():
+                logger.debug(task.cancel())
+        
+        # FIXME: can't wait the server back but server closed
+        #await asyncio.gather(*tasks, return_exceptions=True)
+
+    def stop(self) -> None:
         logger.info(f"Node {self.id} stopping")
+        self.got_heartbeat = datetime.datetime.now().timestamp()
         self.election_timer.cancel()
         self.stop_signal.set()
+        if self.server_loop:
+            asyncio.run_coroutine_threadsafe(self.stop_server(), self.server_loop).result()
+        logger.debug(f"{self.id} waiting threads")
         for thread in self.threads:
             thread.join()
-        self.state = NodeState.FOLLOWER
+        logger.debug(f"{self.id} closing heartbeat")
+        if self.heartbeat_timer:
+            self.heartbeat_timer.join()
+        self.state = FollowerState
+        self.threads.clear()
         logger.info(f"Node {self.id} stopped")

@@ -12,7 +12,7 @@ class Request(Enum):
 
 @dataclass
 class MetaData:
-    type: Request
+    type: Request = Request.NONE
     term: int = 0
     id: int = 0
     granted: bool = False
