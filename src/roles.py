@@ -27,12 +27,12 @@ class CandidateState(NodeState):
         node.leader = -1
 class LeaderState(NodeState):
     def on_enter_state(self, node: RaftNodeBase):
-        node.send_heartbeat()
         node.start_heartbeat()
         node.leader = node.id
 
     def on_exit_state(self, node: RaftNodeBase):
-        node.heartbeat_timer.cancel()
+        #node.heartbeat_timer.cancel()
+        node.heartbeat_timer = None
 
     def handle_request(self, node: RaftNodeBase, request = None):
         # Handle client requests, etc.
