@@ -35,10 +35,11 @@ def test_data_packet():
 
 def test_raft_master_down_integration(setup_nodes):
     nodes = setup_nodes
-    nodes[1].election_timer = threading.Timer(0.05, nodes[1].start_election)
 
     time.sleep(2)
-    nodes[1].stop()
+    leader_nodes = [node for node in nodes if node.state == LeaderState]
+    assert len(leader_nodes) == 1, "Initial election error"
+    leader_nodes[0].stop()
     time.sleep(2)
 
     leader_nodes = [node for node in nodes if node.state == LeaderState]
@@ -48,7 +49,8 @@ def test_raft_master_down_integration(setup_nodes):
 def test_raft_node_back_integration(setup_nodes):
     nodes = setup_nodes
 
-    nodes[1].run()
+    leader_nodes = [node for node in nodes if not node.threads]
+    leader_nodes[0].run()
     time.sleep(2)
 
     leader_nodes = [node for node in nodes if node.state == LeaderState]
