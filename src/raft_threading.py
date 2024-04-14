@@ -31,8 +31,8 @@ class RaftNode:
         self.threads: List[threading.Thread] = []
         self.stop_signal: threading.Event = threading.Event()
         self.heartbeat_timer: Optional[threading.Thread] = None
-        self.got_heartbeat = datetime.datetime.now().timestamp()
-        self.election_timer: threading.Timer = threading.Timer(self.election_timeout, self.start_election) if not init_timeout else threading.Timer(init_timeout, self.start_election)
+        self.election_skip = datetime.datetime.now().timestamp()
+        self.election_timer: Optional[threading.Thread] = None
         self._state.on_enter_state(self)
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
@@ -143,7 +143,7 @@ class RaftNode:
                     logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
         if data.term >= self.term:
             self._state.handle_request(self, data)
-            self.got_heartbeat = datetime.datetime.now().timestamp()
+            self.election_skip = datetime.datetime.now().timestamp()
 
     def start_server(self) -> None:
         loop = asyncio.new_event_loop()
@@ -171,7 +171,6 @@ class RaftNode:
         finally:
             loop.close()
             logger.debug(f"Event loop closed {self.server.is_serving()}")
-
 
     async def _heartbeat_async(self):
         tasks = []
@@ -223,8 +222,9 @@ class RaftNode:
         should_request_votes = False
         if self.stop_signal.is_set():
             return
+
         with self.lock:
-            diff = datetime.datetime.now().timestamp() - self.got_heartbeat
+            diff = datetime.datetime.now().timestamp() - self.election_skip
             if self.state != LeaderState and (self.voted_for is None or self.voted_for == self.id) and diff > self.election_timeout:
                 self.state = CandidateState
                 self.term += 1
@@ -236,16 +236,28 @@ class RaftNode:
         if should_request_votes:
             self.request_votes()
 
-        timeout = self.election_timeout + random.randint(10, 100) / 1000.0
-        threading.Timer(timeout/2, self.give_up_election).start()
-        self.election_timer = threading.Timer(timeout, self.start_election)
-        self.election_timer.start()
+        #threading.Timer(timeout/2, self.give_up_election).start()
+        ...
+
+    def election_async_task(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def election_loop() -> None:
+            while self.state != LeaderState and not self.stop_signal.is_set():
+                await asyncio.sleep(self.election_timeout + random.randint(10, 100) / 1000.0)
+                now = datetime.datetime.timestamp()
+                if self.election_skip and self.election_skip >= now:
+                    continue
+                self.start_election()
+
+        loop.run_until_complete(election_loop())
 
     def reset_election_timer(self) -> None:
-        self.election_timer.cancel()
         time.sleep(0)
-        self.election_timer = threading.Timer(self.election_timeout, self.start_election)
-        self.election_timer.start()
+        self.election_skip = datetime.datetime.timestamp() + self.election_timeout
+        if not self.election_timer:
+            self.election_timer = threading.Thread(target=self.start_election)
 
     def _run(self) -> None:
         self.stop_signal.clear()
@@ -278,17 +290,16 @@ class RaftNode:
 
     def stop(self) -> None:
         logger.info(f"Node {self.id} stopping")
-        self.got_heartbeat = datetime.datetime.now().timestamp()
-        self.election_timer.cancel()
+        self.election_skip = datetime.datetime.now().timestamp()
         self.stop_signal.set()
+        logger.debug(f"{self.id} closing heartbeat")
+        if self.heartbeat_timer:
+            self.heartbeat_timer.join()
         if self.server_loop:
             asyncio.run_coroutine_threadsafe(self.stop_server(), self.server_loop).result()
         logger.debug(f"{self.id} waiting threads")
         for thread in self.threads:
             thread.join()
-        logger.debug(f"{self.id} closing heartbeat")
-        if self.heartbeat_timer:
-            self.heartbeat_timer.join()
         self.state = FollowerState
         self.threads.clear()
         logger.info(f"Node {self.id} stopped")
