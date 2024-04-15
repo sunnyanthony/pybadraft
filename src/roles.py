@@ -32,7 +32,7 @@ class LeaderState(NodeState):
     def on_enter_state(self, node: RaftNodeBase):
         node.start_heartbeat()
         node.leader = node.id
-        node.election_skip = datetime.datetime.timestamp() + 100
+        node.election_skip = datetime.datetime.now().timestamp() + 100
         election_timer = node.election_timer
         node.election_timer = None
 

@@ -20,11 +20,13 @@ class RaftNode:
         self._state: NodeState = FollowerState()
         self.term: int = 0
         self.leader: int = -1
-        self.voted_for: Optional[int] = None
+        self._voted_for: Optional[int] = None
+        self._voted_for_timeout = datetime.datetime.now().timestamp()
         self.votes_received: int = 0
         self.server_timeout: int = 3
         self.election_timeout: float = random.randint(150, 300) / 1000.0
         self.heartbeat_interval = 50/1000
+        self.voting_timeout = random.randint(100, int(self.election_timeout*1000)) / 1000.0
         self.server = None
         self.server_loop = None
         self.lock: threading.RLock = threading.RLock()
@@ -35,6 +37,18 @@ class RaftNode:
         self.election_timer: Optional[threading.Thread] = None
         self._state.on_enter_state(self)
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
+
+    @property
+    def voted_for(self) -> type:
+        res = None
+        if self._voted_for_timeout >= datetime.datetime.now().timestamp():
+            res = self._voted_for
+        return res
+
+    @voted_for.setter
+    def voted_for(self, value) -> None:
+        self._voted_for_timeout = datetime.datetime.now().timestamp() + self.voting_timeout
+        self._voted_for = value
 
     @property
     def state(self) -> type:
@@ -214,10 +228,6 @@ class RaftNode:
         self.heartbeat_timer = threading.Thread(target=self.send_heartbeat)
         self.heartbeat_timer.start()
 
-    def give_up_election(self) -> None:
-        self.voted_for = None
-        self.votes_received = 0
-
     def start_election(self) -> None:
         should_request_votes = False
         if self.stop_signal.is_set():
@@ -225,7 +235,7 @@ class RaftNode:
 
         with self.lock:
             diff = datetime.datetime.now().timestamp() - self.election_skip
-            if self.state != LeaderState and (self.voted_for is None or self.voted_for == self.id) and diff > self.election_timeout:
+            if self.state != LeaderState and diff > self.election_timeout:
                 self.state = CandidateState
                 self.term += 1
                 should_request_votes = True
@@ -236,9 +246,6 @@ class RaftNode:
         if should_request_votes:
             self.request_votes()
 
-        #threading.Timer(timeout/2, self.give_up_election).start()
-        ...
-
     def election_async_task(self) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -246,7 +253,7 @@ class RaftNode:
         async def election_loop() -> None:
             while self.state != LeaderState and not self.stop_signal.is_set():
                 await asyncio.sleep(self.election_timeout + random.randint(10, 100) / 1000.0)
-                now = datetime.datetime.timestamp()
+                now = datetime.datetime.now().timestamp()
                 if self.election_skip and self.election_skip >= now:
                     continue
                 self.start_election()
@@ -255,14 +262,17 @@ class RaftNode:
 
     def reset_election_timer(self) -> None:
         time.sleep(0)
-        self.election_skip = datetime.datetime.timestamp() + self.election_timeout
+        self.election_skip = datetime.datetime.now().timestamp() + self.election_timeout
         if not self.election_timer:
-            self.election_timer = threading.Thread(target=self.start_election)
+            self.election_timer = threading.Thread(target=self.election_async_task)
+            self.election_timer.start()
 
     def _run(self) -> None:
         self.stop_signal.clear()
         thread = threading.Thread(target=self.start_server)
         thread.start()
+        if self.state != LeaderState:
+            self.reset_election_timer()
 
         self.threads.append(thread)
         while not self.stop_signal.is_set():
