@@ -235,7 +235,7 @@ class RaftNode:
 
         with self.lock:
             diff = datetime.datetime.now().timestamp() - self.election_skip
-            if self.state != LeaderState and diff > self.election_timeout:
+            if self.state != LeaderState and (self.voted_for is None or self.voted_for == self.id) and diff > self.election_timeout:
                 self.state = CandidateState
                 self.term += 1
                 should_request_votes = True
