@@ -1,15 +1,15 @@
 import asyncio
 import datetime
-from typing import List, Optional, Tuple
-from functools import partial
-from loguru import logger
-import socket
+import random
 import threading
 import time
-import random
+from typing import List, Optional, Tuple
+
+from loguru import logger
+
 from .decorator import synchronizer
-from .roles import CandidateState, FollowerState, LeaderState, NodeState
 from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
+from .roles import CandidateState, FollowerState, LeaderState, NodeState
 
 class RaftNode:
     def __init__(self, id: int, port: int, peers: List[Tuple[str, int]], init_timeout: float=0) -> None:
@@ -38,12 +38,13 @@ class RaftNode:
         self._state.on_enter_state(self)
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
+    ## Properties
+
     @property
     def voted_for(self) -> type:
-        res = None
         if self._voted_for_timeout >= datetime.datetime.now().timestamp():
-            res = self._voted_for
-        return res
+            return self._voted_for
+        return None
 
     @voted_for.setter
     def voted_for(self, value) -> None:
@@ -63,10 +64,22 @@ class RaftNode:
             self._state.on_enter_state(self)
             logger.info(f"Node {self.id} state changed to {self._state.__class__.__name__}")
 
+    ## State Check and Transition
+
     def check_votes(self) -> None:
         if self.state == CandidateState and self.votes_received > len(self.peers) / 2:
             self.state = LeaderState
             logger.info(f"{self.id} is now the leader for term {self.term}.")
+
+    def reset_state_on_heartbeat(self, data: MetaData) -> None:
+        if data.term >= self.term:
+            self.term = data.term
+            if self.state == CandidateState:
+                self.state = FollowerState
+                logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
+        if data.term >= self.term:
+            self._state.handle_request(self, data)
+            self.election_skip = datetime.datetime.now().timestamp()
 
     ## Server Handling
 
@@ -145,17 +158,6 @@ class RaftNode:
             logger.debug(f"Event loop closed {self.server.is_serving()}")
 
     ## Heartbeat
-
-    def reset_state_on_heartbeat(self, data: MetaData) -> None:
-        with self.lock:
-            if data.term >= self.term:
-                self.term = data.term
-                if self.state == CandidateState:
-                    self.state = FollowerState
-                    logger.info(f"Received heartbeat, reset state to FOLLOWER for {self.id}")
-        if data.term >= self.term:
-            self._state.handle_request(self, data)
-            self.election_skip = datetime.datetime.now().timestamp()
 
     async def _heartbeat_async(self):
         tasks = []
