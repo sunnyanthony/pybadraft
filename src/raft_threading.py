@@ -68,32 +68,33 @@ class RaftNode:
             self.state = LeaderState
             logger.info(f"{self.id} is now the leader for term {self.term}.")
 
-    def request_votes(self) -> None:
-        threads = []
+    async def request_votes(self) -> None:
+        tasks = []
         for peer in self.peers:
-            threads.append(threading.Thread(target=partial(self.send_vote_request, peer=peer)))
-            threads[-1].start()
+            tasks.append(self.send_vote_request(peer=peer))
         
-        for thread in threads:
-            thread.join()
+        await asyncio.gather(*tasks)
 
-    def send_vote_request(self, peer: Tuple[str, int]) -> None:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.settimeout(self.election_timeout)
-                s.connect(('localhost', peer[1]))
-                s.sendall(vote_request(self.term, self.id))
-                logger.debug(f"{self.id} sent vote request to {peer}")
-                data = s.recv(1024)
-                response_data = load_packet(data)
-                if response_data.type == Request.VOTE_GRANTED and response_data.term == self.term and response_data.granted:
-                    self.increment_votes()
-            except ConnectionRefusedError:
-                logger.error(f"{self.id} could not connect to {peer}")
-            except socket.timeout:
-                logger.error(f"Connection to {peer[0]} timed out")
-            except Exception as e:
-                logger.error(f"An error occurred while connecting or communicating with {peer[0]}: {str(e)}")
+    async def send_vote_request(self, peer: Tuple[str, int]) -> None:
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection('localhost', peer[1]), self.election_timeout)
+            writer.write(vote_request(self.term, self.id))
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(1024), self.election_timeout)
+            response_data = load_packet(data)
+            if response_data.type == Request.VOTE_GRANTED and response_data.term == self.term and response_data.granted:
+                self.increment_votes()
+        except ConnectionRefusedError:
+            logger.error(f"{self.id} could not connect to {peer}")
+        except asyncio.TimeoutError:
+            logger.error(f"Connection to {peer[0]} timed out")
+        except Exception as e:
+            logger.error(f"An error occurred while connecting or communicating with {peer[0]}: {str(e)}")
+        finally:
+            if writer:
+                writer.close()
+                await writer.wait_closed()
 
     def increment_votes(self) -> None:
         self.votes_received += 1
@@ -228,7 +229,7 @@ class RaftNode:
         self.heartbeat_timer = threading.Thread(target=self.send_heartbeat)
         self.heartbeat_timer.start()
 
-    def start_election(self) -> None:
+    async def start_election(self) -> None:
         should_request_votes = False
         if self.stop_signal.is_set():
             return
@@ -244,7 +245,7 @@ class RaftNode:
                 logger.info(f"{self.id} becomes a candidate and starts election for term {self.term}.")
 
         if should_request_votes:
-            self.request_votes()
+            await self.request_votes()
 
     def election_async_task(self) -> None:
         loop = asyncio.new_event_loop()
@@ -256,7 +257,7 @@ class RaftNode:
                 now = datetime.datetime.now().timestamp()
                 if self.election_skip and self.election_skip >= now:
                     continue
-                self.start_election()
+                await self.start_election()
 
         loop.run_until_complete(election_loop())
 
