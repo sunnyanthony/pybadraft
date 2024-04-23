@@ -20,15 +20,6 @@ def is_lock_cmd(command: CMD):
 def get_key(command: CMD):
     return ""
 
-class Log(list):
-    def __init__(self, *args, **kwargs):
-        storage = None
-        if "storage" in kwargs:
-            storage = kwargs["storage"]
-            del kwargs["storage"]
-        super().__init__(*args, **kwargs)
-        self.storage = storage
-        # load the LOG from storage
 
 class LogManager:
     def __init__(self, log_callback, command_callback, commit_callback, persistent_storage):
