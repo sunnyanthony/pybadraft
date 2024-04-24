@@ -272,6 +272,10 @@ class RaftNode:
                 await self.start_election()
         loop.run_until_complete(election_loop())
 
+    def stop_election_timer(self) -> None:
+        self.election_skip = datetime.datetime.now().timestamp() + 1000
+        self.election_timer = None
+
     def reset_election_timer(self) -> None:
         time.sleep(0)
         self.election_skip = datetime.datetime.now().timestamp() + self.election_timeout
