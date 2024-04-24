@@ -1,34 +1,46 @@
-import struct
 from enum import Enum
-from dataclasses import dataclass
-
-# TODO: gprof or grpc instead
+from . import packet_pb2
 
 class Request(Enum):
-    NONE = 0
-    VOTE_REQUEST = 1
-    VOTE_GRANTED = 2
-    HEARTBEAT = 3
-    COMMAND = 4
-    USERCOMMAND = 5
+    NONE = packet_pb2.NONE
+    VOTE_REQUEST = packet_pb2.VOTE_REQUEST
+    VOTE_GRANTED = packet_pb2.VOTE_GRANTED
+    HEARTBEAT = packet_pb2.HEARTBEAT
+    COMMAND = packet_pb2.COMMAND
+    USERCOMMAND = packet_pb2.USERCOMMAND
 
-@dataclass
+
 class MetaData:
-    type: Request = Request.NONE
-    term: int = 0
-    id: int = 0
-    granted: bool = False
-    cmd: str = ""
+    def __init__(self, type=Request.NONE, term=0, id=0, granted=False, cmd=""):
+        self.type = type
+        self.term = term
+        self.id = id
+        self.granted = granted
+        self.cmd = cmd
 
     def pack_data(self):
-        return struct.pack('!IIII', self.type.value, self.term, self.id, 1 if self.granted else 0)
-    
+        # Serialize using protobuf
+        data = packet_pb2.MetaData()
+        data.type = self.type
+        data.term = self.term
+        data.id = self.id
+        data.granted = self.granted
+        data.cmd = self.cmd
+        return data.SerializeToString()
+
     @classmethod
     def unpack_data(cls, packed_data):
-        unpacked_data = struct.unpack('!IIII', packed_data)
-        granted = True if unpacked_data[3] == 1 else False
-        data_obj = cls(Request(unpacked_data[0]), unpacked_data[1], unpacked_data[2], granted)
-        return data_obj
+        # Deserialize using protobuf
+        data_obj = packet_pb2.MetaData()
+        data_obj.ParseFromString(packed_data)
+        instance = cls(
+            type=data_obj.type,
+            term=data_obj.term,
+            id=data_obj.id,
+            granted=data_obj.granted,
+            cmd=data_obj.cmd
+        )
+        return instance
 
 def load_packet(data) -> MetaData:
     return MetaData.unpack_data(data)

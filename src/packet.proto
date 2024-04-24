@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package packet;
+
+enum Request {
+    NONE = 0;
+    VOTE_REQUEST = 1;
+    VOTE_GRANTED = 2;
+    HEARTBEAT = 3;
+    COMMAND = 4;
+    USERCOMMAND = 5;
+}
+
+message MetaData {
+    Request type = 1;
+    int32 term = 2;
+    int32 id = 3;
+    bool granted = 4;
+    string cmd = 5;
+}
