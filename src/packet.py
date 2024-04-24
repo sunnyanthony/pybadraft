@@ -9,6 +9,8 @@ class Request(Enum):
     VOTE_REQUEST = 1
     VOTE_GRANTED = 2
     HEARTBEAT = 3
+    COMMAND = 4
+    USERCOMMAND = 5
 
 @dataclass
 class MetaData:
@@ -16,6 +18,7 @@ class MetaData:
     term: int = 0
     id: int = 0
     granted: bool = False
+    cmd: str = ""
 
     def pack_data(self):
         return struct.pack('!IIII', self.type.value, self.term, self.id, 1 if self.granted else 0)
