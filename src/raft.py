@@ -20,6 +20,16 @@ class RaftNodeBase(ABC):
             from src.raft_async import AsyncRaftNode
             return AsyncRaftNode
 
+
+    @abstractmethod
+    def toleader(self, data:MetaData) -> None: ...
+
+    @abstractmethod
+    def appendlog(self, data:MetaData) -> None: ...
+
+    @abstractmethod
+    def sendoutcmd(self, data:MetaData) -> None: ...
+
     @abstractmethod
     async def send_vote_request(self, peer):
         pass

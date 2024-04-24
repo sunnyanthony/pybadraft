@@ -64,6 +64,14 @@ class RaftNode:
             self._state.on_enter_state(self)
             logger.info(f"Node {self.id} state changed to {self._state.__class__.__name__}")
 
+    # Log
+    def toleader(self, data:MetaData) -> None:
+        self.leader
+
+    def sendoutcmd(self, data:MetaData) -> None: ...
+
+    def appendlog(self, data:MetaData) -> None: ...
+
     ## State Check and Transition
 
     def check_votes(self) -> None:
@@ -104,6 +112,7 @@ class RaftNode:
         await writer.drain()
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # TBD: use grpc server
         data_len = len(MetaData().pack_data())
         data = bytearray()
         try:
@@ -115,6 +124,8 @@ class RaftNode:
                         await self.handle_vote_request(metadata, writer)
                     elif metadata.type == Request.HEARTBEAT:
                         self.reset_state_on_heartbeat(metadata)
+                    elif metadata.type == Request.COMMAND:
+                        self._state.handle_request(metadata)
                 except asyncio.TimeoutError:
                     continue
         except asyncio.CancelledError:
