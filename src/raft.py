@@ -17,7 +17,7 @@ class RaftNodeBase(ABC):
         self.peers_status: List[int] = [0] * len(peers)
         self._state: NodeState = FollowerState()
         self.term: int = 0
-        self.leader: int = -1
+        self.leader: Tuple[int, str] = (-1, "")
         self._voted_for: Optional[int] = None
         self._voted_for_timeout: float = datetime.datetime.now().timestamp()
         self.votes_received: int = 0

@@ -29,7 +29,8 @@ class FollowerState(NodeState):
             elif data.type == Request.USERCOMMAND:
                 node.toleader(data)
             else:
-                node.leader = data.id
+                if data.service:
+                    node.leader = (data.id, data.service)
                 node.reset_election_timer()
 
 class CandidateState(NodeState):
