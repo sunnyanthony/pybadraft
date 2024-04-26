@@ -16,9 +16,9 @@ except ModuleNotFoundError:
 def setup_nodes(request):
     peers = [("127.0.0.1", 5011), ("127.0.0.1", 5012), ("127.0.0.1", 5013)]
     nodes = [
-        RaftNode(id=1, port=5011, peers=peers[1:]),
-        RaftNode(id=2, port=5012, peers=peers[:1] + peers[2:]),
-        RaftNode(id=3, port=5013, peers=peers[:-1])
+        RaftNode(id=1, port=5011, peers=peers[1:], exposed=f"{peers[0][0]}:{peers[0][1]}"),
+        RaftNode(id=2, port=5012, peers=peers[:1] + peers[2:], exposed=f"{peers[1][0]}:{peers[1][1]}"),
+        RaftNode(id=3, port=5013, peers=peers[:-1], exposed=f"{peers[2][0]}:{peers[2][1]}")
     ]
     threads = []
     for node in nodes:
