@@ -1,31 +1,31 @@
 from enum import Enum
 from . import packet_pb2
-
-class Request(Enum):
-    NONE = packet_pb2.NONE
-    VOTE_REQUEST = packet_pb2.VOTE_REQUEST
-    VOTE_GRANTED = packet_pb2.VOTE_GRANTED
-    HEARTBEAT = packet_pb2.HEARTBEAT
-    COMMAND = packet_pb2.COMMAND
-    USERCOMMAND = packet_pb2.USERCOMMAND
+from .packet_pb2 import Request
 
 
 class MetaData:
-    def __init__(self, type=Request.NONE, term=0, id=0, granted=False, cmd=""):
+    def __init__(self, type=Request.NONE, term=0, id=0, granted=False, cmd=None, ip=None, port=None, service=None):
         self.type = type
         self.term = term
         self.id = id
         self.granted = granted
         self.cmd = cmd
+        self.service = service
+        #self.ip = ip
+        #self.port = port
 
     def pack_data(self):
         # Serialize using protobuf
         data = packet_pb2.MetaData()
-        data.type = self.type
+        data.type = self.type.value
         data.term = self.term
         data.id = self.id
         data.granted = self.granted
-        data.cmd = self.cmd
+        if self.cmd:
+            data.cmd = self.cmd
+        elif self.service:  # If ip and port are provided, use them in the endpoint
+            data.endpoint.service = self.service
+            #data.endpoint.port = self.port
         return data.SerializeToString()
 
     @classmethod
@@ -33,20 +33,37 @@ class MetaData:
         # Deserialize using protobuf
         data_obj = packet_pb2.MetaData()
         data_obj.ParseFromString(packed_data)
-        instance = cls(
-            type=data_obj.type,
+        # Check which oneof field is set
+        service = None
+        if data_obj.HasField('cmd'):
+            cmd = data_obj.cmd
+            #ip = None
+            #port = None
+        elif data_obj.HasField('endpoint'):
+            service = data_obj.endpoint.service
+            #port = data_obj.endpoint.port
+            cmd = None
+        else:
+            cmd = None
+            #ip = None
+            #port = None
+
+        return cls(
+            type=Request(data_obj.type),
             term=data_obj.term,
             id=data_obj.id,
             granted=data_obj.granted,
-            cmd=data_obj.cmd
+            cmd=cmd,
+            service=service
+            #ip=ip,
+            #port=port
         )
-        return instance
 
 def load_packet(data) -> MetaData:
     return MetaData.unpack_data(data)
 
-def heartbeat(id, term):
-    return MetaData(type=Request.HEARTBEAT, id=id, term=term).pack_data()
+def heartbeat(id, term, service = "localhost:1234"):
+    return MetaData(type=Request.HEARTBEAT, id=id, term=term, service=service).pack_data()
 
 def vote(vote_granted, term, id):
     return MetaData(type=Request.VOTE_GRANTED, granted=vote_granted, term=term, id=id).pack_data()

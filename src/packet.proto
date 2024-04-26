@@ -16,5 +16,15 @@ message MetaData {
     int32 term = 2;
     int32 id = 3;
     bool granted = 4;
-    string cmd = 5;
+    
+    oneof command {
+        string cmd = 5;
+        Endpoint endpoint = 6;
+    }
+}
+
+message Endpoint {
+    string service = 1;
+    //string ip = 1;
+    //int32 port = 2;
 }
