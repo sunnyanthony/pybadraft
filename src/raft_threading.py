@@ -15,17 +15,6 @@ class RaftNode(RaftNodeBase):
     def __init__(self, id: int, port: int, peers: List[Tuple[str, int]], exposed: str = "raft") -> None:
         super().__init__(id, port, peers)
         self.peers_status: List[int] = [0] * len(peers)
-        self._state: NodeState = FollowerState()
-        self.term: int = 0
-        self.leader: int = -1
-        self._voted_for: Optional[int] = None
-        self._voted_for_timeout: float = datetime.datetime.now().timestamp()
-        self.votes_received: int = 0
-        self.server_timeout: int = 3
-        self.election_timeout: float = random.randint(150, 300) / 1000.0
-        self.heartbeat_interval: float = 50 / 1000
-        self.voting_timeout: float = random.randint(100, int(self.election_timeout * 1000)) / 1000.0
-        self.server: Optional[Any] = None
         self.server_loop: Optional[asyncio.AbstractEventLoop] = None
         self.lock: threading.RLock = threading.RLock()
         self.threads: List[threading.Thread] = []
