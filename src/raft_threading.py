@@ -11,11 +11,9 @@ from .decorator import synchronizer
 from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 from .roles import CandidateState, FollowerState, LeaderState, NodeState
 
-class RaftNode:
-    def __init__(self, id: int, port: int, peers: List[Tuple[str, int]], init_timeout: float = 0) -> None:
-        self.id: int = id
-        self.port: int = port
-        self.peers: List[Tuple[str, int]] = peers
+class RaftNode(RaftNodeBase):
+    def __init__(self, id: int, port: int, peers: List[Tuple[str, int]], exposed: str = "raft") -> None:
+        super().__init__(id, port, peers)
         self.peers_status: List[int] = [0] * len(peers)
         self._state: NodeState = FollowerState()
         self.term: int = 0
@@ -34,7 +32,7 @@ class RaftNode:
         self.stop_signal: threading.Event = threading.Event()
         self.heartbeat_timer: Optional[threading.Thread] = None
         self.election_skip: float = datetime.datetime.now().timestamp()
-        self.election_timer: Optional[threading.Thread] = None
+        self.exposed = exposed
         self._state.on_enter_state(self)
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
