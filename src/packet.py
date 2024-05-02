@@ -17,7 +17,7 @@ class MetaData:
     def pack_data(self):
         # Serialize using protobuf
         data = packet_pb2.MetaData()
-        data.type = self.type.value
+        data.type = self.type
         data.term = self.term
         data.id = self.id
         data.granted = self.granted
@@ -26,7 +26,8 @@ class MetaData:
         elif self.service:  # If ip and port are provided, use them in the endpoint
             data.endpoint.service = self.service
             #data.endpoint.port = self.port
-        return data.SerializeToString()
+        serialized_data = data.SerializeToString()
+        return len(serialized_data).to_bytes(4, byteorder='big') + serialized_data
 
     @classmethod
     def unpack_data(cls, packed_data):
@@ -49,7 +50,7 @@ class MetaData:
             #port = None
 
         return cls(
-            type=Request(data_obj.type),
+            type=data_obj.type,
             term=data_obj.term,
             id=data_obj.id,
             granted=data_obj.granted,
