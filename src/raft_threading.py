@@ -3,10 +3,11 @@ import datetime
 import random
 import threading
 import time
-from typing import List, Optional, Tuple, Any
+from typing import List, Optional, Tuple
 
 from loguru import logger
 
+from src.raft import RaftNodeBase
 from .decorator import synchronizer
 from .packet import vote_request, vote, load_packet, heartbeat, Request, MetaData
 from .roles import CandidateState, FollowerState, LeaderState, NodeState
@@ -16,9 +17,8 @@ class RaftNode(RaftNodeBase):
         super().__init__(id, port, peers)
         self.peers_status: List[int] = [0] * len(peers)
         self.server_loop: Optional[asyncio.AbstractEventLoop] = None
-        self.lock: threading.RLock = threading.RLock()
-        self.threads: List[threading.Thread] = []
-        self.stop_signal: threading.Event = threading.Event()
+        self.lock = threading.RLock()
+        self.stop_signal = threading.Event()
         self.heartbeat_timer: Optional[threading.Thread] = None
         self.election_skip: float = datetime.datetime.now().timestamp()
         self.exposed = exposed
@@ -26,7 +26,6 @@ class RaftNode(RaftNodeBase):
         logger.info(f"RaftNode {self.id} initialized with state: {self.state.__name__}, term: {self.term}")
 
     ## Properties
-
     @property
     def voted_for(self) -> Optional[int]:
         if self._voted_for_timeout >= datetime.datetime.now().timestamp():
@@ -100,11 +99,12 @@ class RaftNode(RaftNodeBase):
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         # TBD: use grpc server
-        data_len = len(MetaData().pack_data())
         data = bytearray()
         try:
             while not self.stop_signal.is_set():
                 try:
+                    data_len = await asyncio.wait_for(reader.readexactly(4), timeout=1.0)
+                    data_len = int.from_bytes(data_len, byteorder='big')
                     data = await asyncio.wait_for(reader.readexactly(data_len), timeout=1.0)
                     metadata = load_packet(data)
                     if metadata.type == Request.VOTE_REQUEST:
@@ -167,13 +167,15 @@ class RaftNode(RaftNodeBase):
         writer = None
         try:
             _, writer = await asyncio.open_connection(peer[0], peer[1])
-            writer.write(heartbeat(self.id, self.term))
+            writer.write(heartbeat(self.id, self.term, service=self.exposed))
             await writer.drain()
             self.peers_status[idx] = 0
         except OSError as e:
             if self.peers_status[idx] == 0:
                 logger.error(f"Sending heartbeat to {peer[0]} failed: {str(e)}")
                 self.peers_status[idx] = 1
+        except Exception as e:
+            logger.error(e)
         finally:
             if writer:
                 writer.close()
@@ -210,7 +212,9 @@ class RaftNode(RaftNodeBase):
             reader, writer = await asyncio.wait_for(asyncio.open_connection('localhost', peer[1]), self.election_timeout)
             writer.write(vote_request(self.term, self.id))
             await writer.drain()
-            data = await asyncio.wait_for(reader.read(1024), self.election_timeout)
+            data_len = await asyncio.wait_for(reader.readexactly(4), timeout=1.0)
+            data_len = int.from_bytes(data_len, byteorder='big')
+            data = await asyncio.wait_for(reader.readexactly(data_len), timeout=self.election_timeout)
             response_data = load_packet(data)
             if response_data.type == Request.VOTE_GRANTED and response_data.term == self.term and response_data.granted:
                 self.increment_votes()
